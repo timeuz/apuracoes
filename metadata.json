@@ -1,0 +1,6 @@
+{
+  "name": "Apuração Eleições Brasil",
+  "description": "Painel em tempo real da apuração das eleições brasileiras com dados oficiais do TSE, gráficos comparativos, filtros municipais, estaduais, regionais e do exterior, e alertas push customizáveis.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
