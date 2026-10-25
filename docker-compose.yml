@@ -1,0 +1,25 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: apuracoes-eleicoes-2026
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - TSE_CACHE_TTL_MS=15000
+      - TSE_CACHE_STALE_TTL_MS=60000
+      - TSE_CACHE_MAX_ENTRIES=300
+      - RATE_LIMIT_WINDOW_MS=60000
+      - RATE_LIMIT_MAX_REQUESTS=120
+      - TSE_MAX_CONCURRENT_REQUESTS=5
+      - TSE_MAX_QUEUE_SIZE=100
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3000/api/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

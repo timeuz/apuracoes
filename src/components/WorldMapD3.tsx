@@ -3,7 +3,8 @@ import * as d3 from 'd3';
 import WorldMap from '@svg-maps/world';
 import { getWorldCountries, formatNumberBR, formatPercentBR } from '../data/electionData';
 import { CountryElectionData, TerritoryData, ElectionId } from '../types/election';
-import { ZoomIn, ZoomOut, RotateCcw, Globe, Info, X, CheckCircle2, ChevronRight, Search, Clock } from 'lucide-react';
+import { ZoomIn, ZoomOut, RotateCcw, Globe, Info, X, CheckCircle2, ChevronRight } from 'lucide-react';
+import { VotingCountriesList } from './VotingCountriesList';
 
 interface WorldMapD3Props {
   electionId?: ElectionId;
@@ -44,7 +45,6 @@ export const WorldMapD3: React.FC<WorldMapD3Props> = ({
   const [tooltip, setTooltip] = useState<TooltipData | null>(null);
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [selectedCountry, setSelectedCountry] = useState<CountryElectionData | null>(null);
-  const [searchFilter, setSearchFilter] = useState('');
 
   // Use real dataset depending on temporal state (before vs at/after 17h)
   const countriesData = useMemo(() => getWorldCountries(isPast17h), [isPast17h]);
@@ -175,13 +175,6 @@ export const WorldMapD3: React.FC<WorldMapD3Props> = ({
       });
     }
   };
-
-  // Filtered countries for list/search
-  const votingCountriesList = useMemo(() => {
-    return Object.values(countriesData)
-      .filter((c) => c.name.toLowerCase().includes(searchFilter.toLowerCase()))
-      .sort((a, b) => b.totalVoters - a.totalVoters);
-  }, [countriesData, searchFilter]);
 
   return (
     <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-5 shadow-xs space-y-4 transition-colors">
@@ -603,51 +596,16 @@ export const WorldMapD3: React.FC<WorldMapD3Props> = ({
         </div>
       )}
 
-      {/* Country Quick Search / Selector */}
-      <div className="pt-2 border-t border-slate-100 dark:border-slate-800">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-          <div className="text-xs font-semibold text-slate-600 dark:text-slate-400">
-            Principais Países com Votação no Exterior:
-          </div>
-          <div className="relative w-full sm:w-64">
-            <Search className="w-3.5 h-3.5 absolute left-3 top-2.5 text-slate-400" />
-            <input
-              type="text"
-              placeholder="Buscar país no exterior..."
-              value={searchFilter}
-              onChange={(e) => setSearchFilter(e.target.value)}
-              className="w-full pl-8 pr-3 py-1.5 text-xs rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
-            />
-          </div>
-        </div>
-
-        <div className="flex items-center gap-2 overflow-x-auto py-2.5 scrollbar-thin">
-          {votingCountriesList.map((country) => (
-            <button
-              key={country.id}
-              onClick={() => {
-                if (country.id === 'br') onSelectBrazil();
-                else setSelectedCountry(country);
-              }}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-medium whitespace-nowrap transition-colors cursor-pointer ${
-                country.leaderNumber === '13'
-                  ? 'border-red-200 dark:border-red-900/60 bg-red-50/50 dark:bg-red-950/20 text-red-700 dark:text-red-300 hover:bg-red-100'
-                  : country.leaderNumber === '22'
-                  ? 'border-blue-200 dark:border-blue-900/60 bg-blue-50/50 dark:bg-blue-950/20 text-blue-700 dark:text-blue-300 hover:bg-blue-100'
-                  : 'border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-300'
-              }`}
-            >
-              <span>{country.flag}</span>
-              <span>{country.name}</span>
-              {country.leaderNumber && (
-                <span className="font-bold text-[10px] ml-1">
-                  ({country.leaderName})
-                </span>
-              )}
-            </button>
-          ))}
-        </div>
-      </div>
+      {/* Contagem e Lista Completa de Países com Votação no Exterior (Finalizados e em Andamento) */}
+      <VotingCountriesList
+        countries={countriesData}
+        isPast17h={isPast17h}
+        onSelectCountry={(country) => {
+          setSelectedCountry(country);
+          if (onSelectCountry) onSelectCountry(country);
+        }}
+        onSelectBrazil={onSelectBrazil}
+      />
     </div>
   );
 };

@@ -10,15 +10,23 @@ import {
   getMunicipalities2026,
   getWorldCountries,
 } from './src/data/electionData';
+import { globalTseCache, TseMemoryCache } from './src/server/tseCache';
+import { globalIpRateLimiter, globalTseConcurrencyLimiter, IpRateLimiter, ConcurrencyLimiter } from './src/server/rateLimiter';
+
+export { globalTseCache, TseMemoryCache, globalIpRateLimiter, globalTseConcurrencyLimiter, IpRateLimiter, ConcurrencyLimiter };
 
 const app = express();
 const PORT = parseInt(process.env.PORT || '3000', 10);
 
+// Trust first proxy when running in Docker or behind reverse proxy
+app.set('trust proxy', true);
+
 app.use(express.json());
 
-// In-memory cache for TSE responses to reduce load
-const cache = new Map<string, { data: unknown; timestamp: number }>();
-const CACHE_TTL_MS = 10000; // 10 seconds for real-time live election
+// Apply IP Rate Limiter to /api routes (exempt health and stats to prevent Docker healthcheck 429 failures)
+app.use('/api', globalIpRateLimiter.getMiddleware((req) => {
+  return req.path === '/health' || req.path === '/tse/cache-stats';
+}));
 
 // Target time for polls closing and official TSE results disclosure (25/10/2026 17:00:00 Horário de Brasília)
 const ELECTION_DATE = '2026-10-25';
@@ -57,7 +65,7 @@ export function getElectionTemporalState() {
 
 /**
  * Proxy endpoint to query official TSE endpoints
- * Handles CORS, timeout resilience and caching
+ * Handles CORS, timeout resilience, rate limiting, and robust caching
  */
 app.get('/api/tse/live', async (req: Request, res: Response) => {
   const { path: tsePath } = req.query;
@@ -66,38 +74,56 @@ app.get('/api/tse/live', async (req: Request, res: Response) => {
   }
 
   const cacheKey = tsePath;
-  const cached = cache.get(cacheKey);
-  if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
-    return res.json(cached.data);
+  let tseUrl: string;
+
+  if (tsePath.startsWith('http://') || tsePath.startsWith('https://')) {
+    try {
+      const parsed = new URL(tsePath);
+      // Prevent SSRF: allow only official TSE domains (*.tse.jus.br)
+      if (!parsed.hostname.endsWith('tse.jus.br')) {
+        return res.status(400).json({ error: 'Apenas domínios oficiais do TSE (*.tse.jus.br) são permitidos.' });
+      }
+      tseUrl = tsePath;
+    } catch {
+      return res.status(400).json({ error: 'URL do TSE inválida.' });
+    }
+  } else {
+    // Relative path under official TSE resultados
+    const cleanPath = tsePath.replace(/^\/+/, '');
+    tseUrl = `https://resultados.tse.jus.br/oficial/${cleanPath}`;
   }
 
-  const tseUrl = tsePath.startsWith('http')
-    ? tsePath
-    : `https://resultados.tse.jus.br/oficial/${tsePath.replace(/^\//, '')}`;
-
   try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 6000);
+    const result = await globalTseCache.fetchWithStaleWhileRevalidate(
+      cacheKey,
+      async () => {
+        return await globalTseConcurrencyLimiter.execute(async () => {
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), 6000);
 
-    const response = await fetch(tseUrl, {
-      signal: controller.signal,
-      headers: {
-        'User-Agent': 'Apuracao-Brasil/1.0 (Mozilla/5.0 compatible; TSE-Resultados-Oficial)',
-        'Accept': 'application/json',
-      },
-    });
-    clearTimeout(timeout);
+          try {
+            const response = await fetch(tseUrl, {
+              signal: controller.signal,
+              headers: {
+                'User-Agent': 'Apuracao-Brasil/1.0 (Mozilla/5.0 compatible; TSE-Resultados-Oficial)',
+                'Accept': 'application/json',
+              },
+            });
 
-    if (!response.ok) {
-      return res.status(response.status).json({
-        error: `TSE retornou código ${response.status}`,
-        url: tseUrl,
-      });
-    }
+            if (!response.ok) {
+              throw new Error(`TSE retornou código ${response.status}`);
+            }
 
-    const data = await response.json();
-    cache.set(cacheKey, { data, timestamp: Date.now() });
-    return res.json(data);
+            return await response.json();
+          } finally {
+            clearTimeout(timeout);
+          }
+        });
+      }
+    );
+
+    res.setHeader('X-Cache', result.fromCache ? (result.isStale ? 'STALE' : 'HIT') : 'MISS');
+    return res.json(result.data);
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : 'Falha na comunicação com o TSE';
     return res.status(502).json({
@@ -267,6 +293,19 @@ app.get('/api/health', (_req: Request, res: Response) => {
   });
 });
 
+/**
+ * Cache and Rate Limiter monitoring endpoint
+ */
+app.get('/api/tse/cache-stats', (_req: Request, res: Response) => {
+  res.json({
+    cache: globalTseCache.getStats(),
+    rateLimiter: globalIpRateLimiter.getStats(),
+    concurrencyLimiter: globalTseConcurrencyLimiter.getStats(),
+  });
+});
+
+export { app };
+
 async function startServer() {
   const isProd = process.env.NODE_ENV === 'production';
 
@@ -284,9 +323,28 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
+  const server = app.listen(PORT, '0.0.0.0', () => {
     console.log(`Eleições Brasil Server rodando em http://0.0.0.0:${PORT}`);
   });
+
+  const shutdown = (signal: string) => {
+    console.log(`[Server] Recebido ${signal}. Encerrando servidor gracefully...`);
+    globalIpRateLimiter.destroy();
+    globalTseConcurrencyLimiter.destroy();
+
+    server.close(() => {
+      console.log('[Server] Servidor Express encerrado.');
+      process.exit(0);
+    });
+
+    setTimeout(() => {
+      console.error('[Server] Forçando encerramento imediato por timeout.');
+      process.exit(1);
+    }, 5000).unref();
+  };
+
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
 }
 
 // Only start automatically if not running in test mode
